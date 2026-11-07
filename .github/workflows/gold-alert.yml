@@ -1,0 +1,55 @@
+name: gold-alert
+
+on:
+  schedule:
+    # Every 15 min, Mon-Fri (UTC). Superset on purpose: the script decides by BROKER SERVER TIME
+    # whether anything is due, so DST changes need no edits here. Off-minutes avoid GitHub's
+    # top-of-hour load. Scheduled runs can be delayed or skipped; state.json + a 2h look-back cover that.
+    - cron: "2,17,32,47 * * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "live = send to Telegram | dry-run = print only | test-telegram = send one test message"
+        type: choice
+        options: [dry-run, live, test-telegram]
+        default: dry-run
+
+permissions:
+  contents: write   # only to commit state.json
+
+concurrency:
+  group: gold-alert
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ github.event.inputs.mode || 'live' }}
+        run: |
+          case "$MODE" in
+            dry-run) python run_alert.py --dry-run ;;
+            test-telegram) python run_alert.py --test-telegram ;;
+            *) python run_alert.py ;;
+          esac
+      - name: Commit state
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "gold-alert-bot"
+            git config user.email "gold-alert-bot@users.noreply.github.com"
+            git add state.json
+            git commit -m "state: update"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push
+          fi
